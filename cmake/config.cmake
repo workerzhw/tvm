@@ -410,3 +410,8 @@ SET(CMAKE_VS_PLATFORM_TOOLSET_HOST_ARCHITECTURE "x64")
 
 # Enable Qualcomm OpenCL extension support
 set(USE_OPENCL_EXTN_QCOM OFF)
+
+set(USE_JSON ON)
+set(USE_LLVM ON)
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
+set(USE_LPU ON)
