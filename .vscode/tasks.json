@@ -1,0 +1,43 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "CMake: configure",
+			"command": "cmake",
+			"args": [
+				"-DCMAKE_BUILD_TYPE=Debug",
+				"-B", "build"
+			],
+			"problemMatcher": [],
+		},
+		{
+			"type": "shell",
+			"label": "config.cmake",
+			"command": "cp cmake/config.cmake build",
+			"dependsOn": "CMake: configure",
+		},
+		{
+			"type": "shell",
+			"label": "CMake: build",
+			"command": "cmake",
+			"args": [
+				"--build", "build",
+				"--config", "Debug",
+				"--parallel", "$(nproc)"
+			],
+			"targets": [
+				"[N/A - Select Kit]"
+			],
+			"group": "build",
+			"problemMatcher": [],
+			"dependsOn": "config.cmake",
+			"detail": "---L---"
+		},
+        {
+            "label": "myShellCmd",
+            "type": "shell",
+            "command":"echo 0 | tee /proc/sys/kernel/yama/ptrace_scope"
+        }
+	]
+}

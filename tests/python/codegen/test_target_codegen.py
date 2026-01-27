@@ -18,6 +18,7 @@
 import pytest
 import numpy as np
 import tvm
+import tvm.testing
 from tvm.script import tir as T
 
 
@@ -131,4 +132,8 @@ def test_codegen_loop_step(target):
 
 
 if __name__ == "__main__":
+    import os
+    print("pid:", os.getpid())
+    input("Press Enter to continue...")  # 阻塞，直到在终端敲回车
+
     tvm.testing.main()
