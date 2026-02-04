@@ -38,6 +38,7 @@ import math
 import operator
 import re
 import warnings
+import functools
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as _np
@@ -1659,6 +1660,22 @@ class Sqrt(OnnxOpConverter):
         return relax.op.sqrt(inputs[0])
 
 
+def compute_broadcast_shape(shape_a, shape_b):
+    """Compute target shape for Multidirectional Broadcasting"""
+    rank = max(len(shape_a), len(shape_b))
+
+    a = (1,) * (rank - len(shape_a)) + tuple(shape_a)
+    b = (1,) * (rank - len(shape_b)) + tuple(shape_b)
+
+    target = []
+    for ai, bi in zip(a, b):
+        if ai == bi or ai == 1 or bi == 1:
+            target.append(max(ai, bi))
+        else:
+            raise ValueError(f"Cannot broadcast {ai} and {bi}")
+    return tuple(target)
+
+
 class MultiInputBase(OnnxOpConverter):
     """Converts an onnx MultiInputBase node into an equivalent Relax expression."""
 
@@ -1674,9 +1691,12 @@ class MultiInputBase(OnnxOpConverter):
             output = cls.numpy_op(*np_inputs)  # pylint: disable=not-callable
             return relax.const(output, output.dtype)
 
-        # Expand inputs, stack them, then perform minimum over the new axis.
-        inputs = [bb.normalize(relax.op.expand_dims(i, axis=0)) for i in inputs]
-        stacked_tensor = relax.op.concat(inputs, axis=0)
+        input_shapes = [inp.struct_info.shape for inp in inputs]
+        target_shape = functools.reduce(compute_broadcast_shape, input_shapes)
+
+        # broadcast_to, stack them, then perform minimum over the new axis.
+        inputs = [bb.normalize(relax.op.broadcast_to(i, target_shape)) for i in inputs]
+        stacked_tensor = bb.normalize(relax.op.stack(inputs, axis=0))
         return cls.relax_op(stacked_tensor, axis=0)  # pylint: disable=not-callable
 
 
@@ -2257,6 +2277,8 @@ class Resize(OnnxOpConverter):
                 roi = roi.data.numpy().tolist()
                 if len(roi) == 2 * ndims:
                     roi = roi[2:ndims] + roi[ndims + 2 : 2 * ndims]
+                elif len(roi) == 0:
+                    roi = [0.0] * (2 * (ndims - 2))
             else:
                 roi = relax.op.concat(
                     [
@@ -2289,7 +2311,7 @@ class Resize(OnnxOpConverter):
             elif isinstance(sizes, relax.expr.ShapeExpr):
                 sizes = [int(val.value) for val in sizes.values][2:]
             else:
-                assert f"Type {type(size)} for size is currently unsupported."
+                assert f"Type {type(sizes)} for size is currently unsupported."
 
         if ndims == 3:
             return bb.emit_te(
@@ -2413,8 +2435,18 @@ class BatchNormalization(OnnxOpConverter):
         mean = inputs[3]
         var = inputs[4]
         epsilon = attr.get("epsilon", 1e-05)
+        momentum = attr.get("momentum", 0.9)
+        training_mode = attr.get("training_mode", 0)
         return relax.op.nn.batch_norm(
-            data, gamma=scale, beta=bias, moving_mean=mean, moving_var=var, epsilon=epsilon, axis=1
+            data,
+            gamma=scale,
+            beta=bias,
+            moving_mean=mean,
+            moving_var=var,
+            axis=1,
+            epsilon=epsilon,
+            momentum=momentum,
+            training=training_mode,
         )
 
 

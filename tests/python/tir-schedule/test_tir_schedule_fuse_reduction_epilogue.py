@@ -38,13 +38,13 @@ def matmul_bias_before(
 ) -> None:
     temp = T.alloc_buffer((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             with T.init():
                 temp[vi, vj] = T.int32(0)
             temp[vi, vj] = temp[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
     for i, j in T.grid(16, 16):
-        with T.block("add"):
+        with T.sblock("add"):
             vi, vj = T.axis.remap("SS", [i, j])
             D[vi, vj] = temp[vi, vj] + C[vi, vj]
 
@@ -58,7 +58,7 @@ def matmul_bias_expected(
 ) -> None:
     temp = T.alloc_buffer((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             T.reads(C[vi, vj], A[vi, vk], B[vj, vk])
             T.writes(D[vi, vj])
@@ -76,13 +76,13 @@ def matmul_bias_fp32_before(
 ) -> None:
     temp = T.alloc_buffer((32, 32), dtype="float32")
     for i, j, k in T.grid(32, 32, 32):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             with T.init():
                 temp[vi, vj] = T.float32(0)
             temp[vi, vj] = temp[vi, vj] + A[vi, vk] * B[vj, vk]
     for i, j in T.grid(32, 32):
-        with T.block("add"):
+        with T.sblock("add"):
             vi, vj = T.axis.remap("SS", [i, j])
             D[vi, vj] = temp[vi, vj] + C[vi, vj]
 
@@ -96,7 +96,7 @@ def matmul_bias_fp32_expected(
 ) -> None:
     temp = T.alloc_buffer((32, 32), dtype="float32")
     for i, j, k in T.grid(32, 32, 32):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             T.reads(C[vi, vj], A[vi, vk], B[vj, vk])
             T.writes(D[vi, vj])
@@ -115,17 +115,17 @@ def matmul_bias_multiple_epilogue_before(
 ) -> None:
     temp = T.alloc_buffer((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             with T.init():
                 temp[vi, vj] = T.int32(0)
             temp[vi, vj] = temp[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
     for i, j in T.grid(16, 16):
-        with T.block("add"):
+        with T.sblock("add"):
             vi, vj = T.axis.remap("SS", [i, j])
             D[vi, vj] = temp[vi, vj] + C[vi, vj]
     for i, j in T.grid(16, 16):
-        with T.block("add2"):
+        with T.sblock("add2"):
             vi, vj = T.axis.remap("SS", [i, j])
             E[vi, vj] = temp[vi, vj] + C[vi, vj]
 
@@ -140,7 +140,7 @@ def matmul_bias_multiple_epilogue_expected(
 ) -> None:
     temp = T.alloc_buffer((16, 16), dtype="int32")
     for i, j, k in T.grid(16, 16, 16):
-        with T.block("multiply"):
+        with T.sblock("multiply"):
             vi, vj, vk = T.axis.remap("SSR", [i, j, k])
             T.reads(C[vi, vj], A[vi, vk], B[vj, vk])
             T.writes(D[vi, vj])
@@ -148,7 +148,7 @@ def matmul_bias_multiple_epilogue_expected(
                 D[vi, vj] = C[vi, vj]
             D[vi, vj] = D[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
     for i, j in T.grid(16, 16):
-        with T.block("add2"):
+        with T.sblock("add2"):
             vi, vj = T.axis.remap("SS", [i, j])
             T.reads(temp[vi, vj], C[vi, vj])
             T.writes(E[vi, vj])
@@ -212,6 +212,65 @@ def test_fuse_reduction_epilogue_multiple_epilogue():
 
     mod = tvm.compile(sch.mod["main"], target="llvm")
     assert mod is not None
+
+
+@T.prim_func
+def matmul_bias_invalid_multiple_use_before(
+    A: T.Buffer((16, 16), "int8"),
+    B: T.Buffer((16, 16), "int8"),
+    C1: T.Buffer((16, 16), "int32"),
+    C2: T.Buffer((16, 16), "int32"),
+    D: T.Buffer((16, 16), "int32"),
+) -> None:
+    """Epilogue uses the reduction result twice; fusion must be rejected."""
+    temp = T.alloc_buffer((16, 16), dtype="int32")
+    for i, j, k in T.grid(16, 16, 16):
+        with T.sblock("multiply"):
+            vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+            with T.init():
+                temp[vi, vj] = T.int32(0)
+            temp[vi, vj] = temp[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
+    for i, j in T.grid(16, 16):
+        with T.sblock("bad_epilogue"):
+            vi, vj = T.axis.remap("SS", [i, j])
+            # temp[vi, vj] is used twice in the epilogue expression
+            D[vi, vj] = (temp[vi, vj] + C1[vi, vj]) * (temp[vi, vj] + C2[vi, vj])
+
+
+def test_fuse_reduction_epilogue_reject_multiple_use():
+    """fusion should be rejected when the reduction result appears more than once."""
+    sch = tir.Schedule(matmul_bias_invalid_multiple_use_before, debug_mask="all")
+    with pytest.raises(tvm.tir.ScheduleError):
+        sch.fuse_reduction_epilogue("multiply", "bad_epilogue")
+
+
+@T.prim_func
+def matmul_bias_invalid_scaling_before(
+    A: T.Buffer((16, 16), "int8"),
+    B: T.Buffer((16, 16), "int8"),
+    C: T.Buffer((16, 16), "int32"),
+    D: T.Buffer((16, 16), "int32"),
+) -> None:
+    """Epilogue scales the reduction result; fusion must be rejected."""
+    temp = T.alloc_buffer((16, 16), dtype="int32")
+    for i, j, k in T.grid(16, 16, 16):
+        with T.sblock("multiply"):
+            vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+            with T.init():
+                temp[vi, vj] = T.int32(0)
+            temp[vi, vj] = temp[vi, vj] + T.cast(A[vi, vk], "int32") * T.cast(B[vj, vk], "int32")
+    for i, j in T.grid(16, 16):
+        with T.sblock("scaled_epilogue"):
+            vi, vj = T.axis.remap("SS", [i, j])
+            # temp[vi, vj] is scaled by 2 before adding bias; this must not be fused.
+            D[vi, vj] = temp[vi, vj] * T.int32(2) + C[vi, vj]
+
+
+def test_fuse_reduction_epilogue_reject_scaling():
+    """fusion should be rejected when the reduction result is scaled by Mul/Div/Mod."""
+    sch = tir.Schedule(matmul_bias_invalid_scaling_before, debug_mask="all")
+    with pytest.raises(tvm.tir.ScheduleError):
+        sch.fuse_reduction_epilogue("multiply", "scaled_epilogue")
 
 
 if __name__ == "__main__":

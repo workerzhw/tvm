@@ -393,22 +393,53 @@ def test_mod(int_mode: bool):
     verify_binary_scalar("Mod", attrs={"fmod": fmod}, dtype=dtype)
 
 
-@pytest.mark.parametrize("num_inputs", [1, 2, 4])
+SHAPE_PARAMS = [
+    ([[32, 32], [32, 32]], [32, 32]),
+    ([[32, 1], [1, 2]], [32, 2]),
+    (
+        [
+            [
+                32,
+            ],
+            [
+                1,
+            ],
+        ],
+        [
+            32,
+        ],
+    ),
+    ([[32, 32, 1, 1], [1, 32, 32]], [32, 32, 32, 32]),
+    (
+        [
+            [32, 32, 1, 1],
+            [1, 32, 1],
+            [
+                32,
+            ],
+        ],
+        [32, 32, 32, 32],
+    ),
+]
+
+
+@pytest.mark.parametrize("input_shapes, expected_output_shape", SHAPE_PARAMS)
 @pytest.mark.parametrize("op_name", ["Min", "Max", "Sum", "Mean"])
-def test_multi_input(op_name: str, num_inputs: int):
-    input_shape = [32, 32]
-    input_var = ["i" + str(i) for i in range(num_inputs)]
-    input_values = [
-        helper.make_tensor_value_info(var, TensorProto.FLOAT, input_shape) for var in input_var
-    ]
-    test_node = helper.make_node(op_name, input_var, ["c"])
+def test_multi_input_broadcasting(op_name, input_shapes, expected_output_shape):
+    num_inputs = len(input_shapes)
+    input_names = [f"i{i}" for i in range(num_inputs)]
+
+    input_values_info = []
+    for name, shape in zip(input_names, input_shapes):
+        input_values_info.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, shape))
+    test_node = helper.make_node(op_name, input_names, ["output"])
+    output_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, expected_output_shape)
     graph = helper.make_graph(
         [test_node],
-        "multi_input_test",
-        inputs=input_values,
-        outputs=[helper.make_tensor_value_info("c", TensorProto.FLOAT, input_shape)],
+        f"multi_input_{op_name}_test",
+        inputs=input_values_info,
+        outputs=[output_info],
     )
-
     model = helper.make_model(graph, producer_name="multi_input_test")
     check_correctness(model)
 
@@ -2663,11 +2694,12 @@ def test_tile(dynamic):
 def _generate_roi_cases():
     # Base case when with_roi is False
     roi_list = [
-        pytest.param(False, None, id="no_roi"),
+        pytest.param(False, None, False, id="no_roi"),
     ]
 
-    # Valid when with_roi is True
+    # Valid when with_roi is True and with_constant is True/False
     roi_cases = [
+        [],
         [0.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 1.0],
         [0.1, 0.1, 0.9, 0.9],
@@ -2678,27 +2710,51 @@ def _generate_roi_cases():
         [0.1, 0.2, 0.9, 0.8],
     ]
     for roi in roi_cases:
-        roi_list.append(pytest.param(True, roi, id=f"roi_{'_'.join(str(x) for x in roi)}"))
+        roi_list.append(pytest.param(True, roi, True, id=f"roi_{'_'.join(str(x) for x in roi)}"))
+        roi_list.append(pytest.param(True, roi, False, id=f"roi_{'_'.join(str(x) for x in roi)}"))
 
     return roi_list
 
 
-@pytest.mark.parametrize("with_roi, roi_list", _generate_roi_cases())
-def test_resize(with_roi, roi_list):
+@pytest.mark.parametrize("with_roi, roi_list, with_constant", _generate_roi_cases())
+def test_resize(with_roi, roi_list, with_constant):
+    nodes = []
     resize_node = helper.make_node(
         "Resize", ["X", "roi" if with_roi else "", "scales"], ["Y"], mode="cubic"
     )
 
+    if with_roi and with_constant:
+        roi_tensor = helper.make_tensor(
+            name="roi",
+            data_type=TensorProto.FLOAT,
+            dims=[len(roi_list)],
+            vals=roi_list,
+        )
+
+        roi_const_node = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["roi"],
+            value=roi_tensor,
+        )
+        nodes.append(roi_const_node)
+
+    nodes.append(resize_node)
+
+    initializers = [
+        helper.make_tensor("scales", TensorProto.FLOAT, [4], [1.0, 1.0, 2.0, 2.0]),
+    ]
+
+    if with_roi and not with_constant:
+        initializers.append(helper.make_tensor("roi", TensorProto.FLOAT, [len(roi_list)], roi_list))
+
     graph = helper.make_graph(
-        [resize_node],
+        nodes,
         "resize_test",
         inputs=[
             helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32]),
         ],
-        initializer=[
-            helper.make_tensor("scales", TensorProto.FLOAT, [4], [1.0, 1.0, 2.0, 2.0]),
-            *([helper.make_tensor("roi", TensorProto.FLOAT, [4], roi_list)] if with_roi else []),
-        ],
+        initializer=initializers,
         outputs=[
             helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 3, 64, 64]),
         ],
